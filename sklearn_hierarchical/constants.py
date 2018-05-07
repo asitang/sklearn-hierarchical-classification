@@ -11,6 +11,8 @@ ROOT = -1
 CLASSIFIER = "classifier"
 DEFAULT = "default"
 METAFEATURES = "metafeatures"
+PROBABILITY="probability"
+LEVEL='level'
 
 # Enumeration of valid configuration types
 VALID_ALGORITHM = ("lcn", "lcpn")

@@ -4,16 +4,15 @@ Hierarchical classifier interface.
 """
 import numpy as np
 from networkx import DiGraph, is_tree
-from scipy.sparse import csr_matrix, lil_matrix
+from scipy.sparse import csr_matrix
 from sklearn.base import BaseEstimator, ClassifierMixin, MetaEstimatorMixin, clone
 from sklearn.dummy import DummyClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.utils.validation import check_array, check_consistent_length, check_is_fitted, check_X_y
 from sklearn.utils.multiclass import check_classification_targets
-from tqdm import tqdm_notebook
 
-from sklearn_hierarchical.array import apply_along_rows, apply_rollup_Xy, flatten_list, nnz_rows_ix
-from sklearn_hierarchical.constants import CLASSIFIER, DEFAULT, METAFEATURES, ROOT
+from sklearn_hierarchical.array import apply_along_rows, apply_rollup_Xy, extract_rows_csr, flatten_list, nnz_rows_ix
+from sklearn_hierarchical.constants import CLASSIFIER, DEFAULT, METAFEATURES, ROOT, PROBABILITY
 from sklearn_hierarchical.decorators import logger
 from sklearn_hierarchical.dummy import DummyProgress
 from sklearn_hierarchical.graph import make_flat_hierarchy, rollup_nodes
@@ -108,10 +107,10 @@ class HierarchicalClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin)
         but can be overridden by user in some cases, e.g if the original taxonomy is already rooted and there's no need
         for injecting an artifical root node.
 
-    interactive : bool
-        If set to True, functionality which is useful for interactive usage (e.g in a Jupyter notebook) will be
-        enabled. Specifically, fitting the model will display progress bars (via tqdm) where appropriate, and more
-        verbose logging will be emitted.
+    progress_wrapper : progress generator or None
+        If value is set, will attempt to use the given generator to display progress updates. This added functionality
+        is especially useful within interactive environments (e.g in a testing harness or a Jupyter notebook). Setting
+        this value will also enable verbose logging. Common values in tqdm are `tqdm_notebook` or `tqdm`
 
     Attributes
     ----------
@@ -127,7 +126,7 @@ class HierarchicalClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin)
     """
     def __init__(self, base_estimator=None, class_hierarchy=None, prediction_depth="mlnp",
                  algorithm="lcpn", training_strategy=None, stopping_criteria=None,
-                 root=ROOT, interactive=False):
+                 root=ROOT, progress_wrapper=None):
         self.base_estimator = base_estimator
         self.class_hierarchy = class_hierarchy
         self.prediction_depth = prediction_depth
@@ -135,7 +134,7 @@ class HierarchicalClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin)
         self.training_strategy = training_strategy
         self.stopping_criteria = stopping_criteria
         self.root = root
-        self.interactive = interactive
+        self.progress_wrapper = progress_wrapper
 
     def fit(self, X, y=None, sample_weight=None):
         """Fit underlying classifiers.
@@ -176,9 +175,11 @@ class HierarchicalClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin)
         )
 
         # Recursively build training feature sets for each node in graph
+        print('Building features...')
         with self._progress(total=self.n_classes_ + 1, desc="Building features") as progress:
             self._recursive_build_features(X, y, node_id=self.root, progress=progress)
 
+        print('training...')
         # Recursively train base classifiers
         with self._progress(total=self.n_classes_ + 1, desc="Training base classifiers") as progress:
             self._recursive_train_local_classifiers(X, y, node_id=self.root, progress=progress)
@@ -262,7 +263,7 @@ class HierarchicalClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin)
 
         if self.graph_.out_degree(node_id) == 0:
             # Leaf node
-            indices = np.flatnonzero(y == node_id)
+            indices = np.flatnonzero(np.array(y) == node_id)
             self.graph_.node[node_id]["X"] = self._build_features(
                 X=X,
                 y=y,
@@ -293,13 +294,12 @@ class HierarchicalClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin)
         return self.graph_.node[node_id]["X"]
 
     def _build_features(self, X, y, indices):
-        X_ = lil_matrix(X.shape, dtype=X.dtype)
-        X_[indices, :] = X[indices, :]
+        X_ = extract_rows_csr(X, indices)
 
         # Perform feature selection
         X_ = self._select_features(X=X_, y=np.array(y)[indices])
 
-        return X_.tocsr()
+        return X_
 
     def _select_features(self, X, y):
         """
@@ -449,6 +449,27 @@ class HierarchicalClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin)
             clf = self.graph_.node[prediction].get(CLASSIFIER, None)
 
         return path, class_proba
+    def recursive_predict_all_paths(self,x,levelstop=None):
+        self._recursive_predict_all_paths(x,self.root,0,levelstop=levelstop)
+
+    def _recursive_predict_all_paths(self, x, classifer_node, level, levelstop=None):
+
+        if levelstop and levelstop==level:
+            return
+
+        clf = self.graph_.node[classifer_node].get(CLASSIFIER, None)
+        if not clf:
+            return
+
+
+        # classify and add probabilities to the nodes for the respective classes
+        probs = clf.predict_proba(x)[0]
+        for prob, class_ in zip(probs,clf.classes_):
+            self.graph_.node[class_][PROBABILITY] = prob
+            self._recursive_predict_all_paths(x, class_, level+1, levelstop)
+
+        return
+
 
     def _should_early_terminate(self, current_node, prediction, score):
         """
@@ -512,7 +533,7 @@ class HierarchicalClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin)
         return LogisticRegression()
 
     def _progress(self, total, desc, **kwargs):
-        if self.interactive:
-            return tqdm_notebook(total=total, desc=desc)
+        if self.progress_wrapper:
+            return self.progress_wrapper(total=total, desc=desc)
         else:
             return DummyProgress()
