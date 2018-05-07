@@ -294,17 +294,13 @@ exit()
 
 clf=loadmodel('clf')
 cv=loadmodel('cv')
-graph=clf.graph_
-graph=copy.deepcopy(graph)
 input=cv.transform([input])
 clf.recursive_predict_all_paths(input,levelstop=2)
-graph=clf.graph_
-savemodel(graph,'graph')
-
-
 
 # ================================================== do similarity and add probability to leaf nodes ===================
 
+graph=clf.graph_
+graph=copy.deepcopy(graph)
 input=cv.transform([input])
 selected_leaf_nodes=[]
 to_remove=[]
