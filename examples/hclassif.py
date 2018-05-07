@@ -294,7 +294,7 @@ exit()
 
 clf=loadmodel('clf')
 cv=loadmodel('cv')
-graph=loadmodel('graph')
+graph=clf.graph_
 graph=copy.deepcopy(graph)
 input=cv.transform([input])
 clf.recursive_predict_all_paths(input,levelstop=2)
